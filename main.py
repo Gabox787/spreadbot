@@ -39,7 +39,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен в файле .env!")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+from aiogram.client.default import DefaultBotProperties
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
 # Глобальное хранилище активных сделок: {user_id: trade_dict}
