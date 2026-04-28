@@ -1,5 +1,5 @@
 """
-strategy.py — логика расчётов: Fair Price, спред, PnL.
+strategy.py — логика расчётов: Fair Price, спред, PnL, форматирование.
 """
  
 from datetime import datetime, timezone
@@ -42,11 +42,21 @@ def format_duration(start_time: datetime) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
  
  
-def fmt_price(p):
-    return f"{p:,.2f}$" if p is not None else "N/A"
+def fmt_price(p) -> str:
+    """Умное форматирование цены: больше знаков для маленьких цен."""
+    if p is None:
+        return "N/A"
+    if p >= 1000:
+        return f"{p:,.2f}$"
+    elif p >= 1:
+        return f"{p:,.4f}$"
+    elif p >= 0.01:
+        return f"{p:,.6f}$"
+    else:
+        return f"{p:,.8f}$"
  
  
-def fmt_fr(fr):
+def fmt_fr(fr) -> str:
     if fr is None:
         return "N/A"
     pct = fr * 100
@@ -58,12 +68,12 @@ def build_analysis_message(symbol: str, data: dict) -> str:
     bybit = data["bybit"]
     bybit_price = bybit.get("price")
     fair_price = calculate_fair_price(data)
+    fetched_at = bybit.get("fetched_at", "—")
  
-    # --- Bybit блок ---
     if bybit_price and fair_price:
         spread = calculate_spread(bybit_price, fair_price)
         spread_sign = "+" if spread >= 0 else ""
-        spread_str = f"<b>{spread_sign}{spread:.4f}%</b>"
+        spread_str = f"{spread_sign}{spread:.4f}%"
         if spread > 0.05:
             price_signal = "🔴 Цена <b>выше</b> справедливой — сигнал на <b>Short</b>"
         elif spread < -0.05:
@@ -79,21 +89,23 @@ def build_analysis_message(symbol: str, data: dict) -> str:
  
     lines = [
         f"🚀 <b>Анализ: {symbol}</b>",
+        f"🕐 <i>Данные получены: {fetched_at}</i>",
         "",
-        f"📊 <b>Bybit (текущая):</b> {fmt_price(bybit_price)}",
-        f"⚖️ <b>Fair Price:</b> {fmt_price(fair_price)} ({spread_str} от Bybit)" if fair_price else "⚖️ <b>Fair Price:</b> N/A",
+        f"📊 <b>Bybit:</b> <code>{fmt_price(bybit_price)}</code>",
+        f"⚖️ <b>Fair Price:</b> <code>{fmt_price(fair_price)}</code> (<b>{spread_str}</b> от Bybit)" if fair_price else "⚖️ <b>Fair Price:</b> N/A",
         f"📉 <b>Фандинг Bybit:</b> <code>{fmt_fr(bybit_fr)}</code> [{bybit_interval}]" if bybit_fr is not None else "📉 <b>Фандинг Bybit:</b> N/A",
         "",
-        "─" * 30,
+        "━━━━━━━━━━━━━━━━━━━━",
         "📈 <b>Данные по биржам:</b>",
         "",
     ]
  
-    # --- Блок каждой биржи ---
     for key, label, emoji in [("binance", "Binance", "🟡"), ("okx", "OKX", "🔵"), ("coingecko", "CoinGecko", "🌍")]:
         entry = data.get(key, {})
+        ex_time = entry.get("fetched_at", "—")
         if not entry.get("ok"):
-            lines.append(f"{emoji} <b>{label}:</b> ⚠️ Недоступна")
+            err = entry.get("error", "Недоступна")
+            lines.append(f"{emoji} <b>{label}:</b> ⚠️ {err}")
             lines.append("")
             continue
  
@@ -101,7 +113,6 @@ def build_analysis_message(symbol: str, data: dict) -> str:
         fr = entry.get("funding_rate")
         interval = entry.get("funding_interval", "—")
  
-        # Считаем fair price только из этой биржи относительно общего fair price
         if price and fair_price:
             diff = (price - fair_price) / fair_price * 100
             diff_sign = "+" if diff >= 0 else ""
@@ -111,24 +122,59 @@ def build_analysis_message(symbol: str, data: dict) -> str:
             diff_str = "N/A"
             diff_emoji = "⚪"
  
-        lines.append(f"{emoji} <b>{label}</b>")
-        lines.append(f"  💵 Текущая цена:  <code>{fmt_price(price)}</code>")
-        lines.append(f"  ⚖️ Fair Price:     <code>{fmt_price(fair_price)}</code>")
-        lines.append(f"  📊 Разница:        {diff_emoji} <code>{diff_str}</code>")
- 
+        lines.append(f"{emoji} <b>{label}</b>  <i>({ex_time})</i>")
+        lines.append(f"  💵 Текущая цена: <code>{fmt_price(price)}</code>")
+        lines.append(f"  ⚖️ Fair Price:   <code>{fmt_price(fair_price)}</code>")
+        lines.append(f"  📊 Разница:      {diff_emoji} <code>{diff_str}</code>")
         if key != "coingecko":
-            if fr is not None:
-                lines.append(f"  📉 Фандинг:        <code>{fmt_fr(fr)}</code> [{interval}]")
-            else:
-                lines.append(f"  📉 Фандинг:        N/A")
- 
+            lines.append(f"  📉 Фандинг:      <code>{fmt_fr(fr)}</code> [{interval}]" if fr is not None else "  📉 Фандинг:      N/A")
         lines.append("")
  
     lines += [
-        "─" * 30,
+        "━━━━━━━━━━━━━━━━━━━━",
         f"💡 <b>Рекомендация:</b> {price_signal}",
     ]
+    return "\n".join(lines)
  
+ 
+def build_single_exchange_message(symbol: str, exchange_name: str, ex_data: dict, fair_price: Optional[float]) -> str:
+    """Сообщение для команд типа /btcbybit."""
+    price = ex_data.get("price")
+    fr = ex_data.get("funding_rate")
+    interval = ex_data.get("funding_interval", "—")
+    fetched_at = ex_data.get("fetched_at", "—")
+ 
+    if not ex_data.get("ok"):
+        return f"❌ <b>{exchange_name}</b> недоступна\nОшибка: {ex_data.get('error', '—')}"
+ 
+    if price and fair_price:
+        spread = (price - fair_price) / fair_price * 100
+        spread_sign = "+" if spread >= 0 else ""
+        spread_str = f"{spread_sign}{spread:.4f}%"
+        if spread > 0.05:
+            signal = "🔴 Цена выше Fair Price — сигнал на <b>Short</b>"
+        elif spread < -0.05:
+            signal = "🟢 Цена ниже Fair Price — сигнал на <b>Long</b>"
+        else:
+            signal = "⚖️ Цена близка к справедливой — ждём"
+    else:
+        spread_str = "N/A"
+        signal = "⚖️ Недостаточно данных"
+ 
+    emoji_map = {"bybit": "📊", "binance": "🟡", "okx": "🔵", "coingecko": "🌍"}
+    emoji = emoji_map.get(exchange_name.lower(), "📊")
+ 
+    lines = [
+        f"{emoji} <b>{exchange_name.upper()} — {symbol}</b>",
+        f"🕐 <i>{fetched_at}</i>",
+        "",
+        f"💵 <b>Текущая цена:</b>  <code>{fmt_price(price)}</code>",
+        f"⚖️ <b>Fair Price:</b>    <code>{fmt_price(fair_price)}</code>",
+        f"📊 <b>Спред:</b>         <code>{spread_str}</code>",
+    ]
+    if fr is not None:
+        lines.append(f"📉 <b>Фандинг:</b>        <code>{fmt_fr(fr)}</code> [{interval}]")
+    lines += ["", f"💡 {signal}"]
     return "\n".join(lines)
  
  
@@ -143,6 +189,7 @@ def build_check_message(trade: dict, current_data: dict) -> str:
     fair_price = calculate_fair_price(current_data)
     bybit_fr = current_data["bybit"].get("funding_rate")
     bybit_interval = current_data["bybit"].get("funding_interval", "8ч")
+    fetched_at = current_data["bybit"].get("fetched_at", "—")
  
     pnl = calculate_pnl(entry_price, bybit_price, side, leverage) if bybit_price else None
     spread = calculate_spread(bybit_price, fair_price) if (bybit_price and fair_price) else None
@@ -164,10 +211,11 @@ def build_check_message(trade: dict, current_data: dict) -> str:
  
     lines = [
         f"🔄 <b>Статус: {symbol} ({side_emoji} {side})</b>",
+        f"🕐 <i>Обновлено: {fetched_at}</i>",
         "",
         f"⏱ <b>Удерживаю:</b> <code>{duration}</code>",
-        f"💵 <b>Вход:</b> {entry_price:,.2f}$ | <b>Текущая:</b> {bybit_price:,.2f}$" if bybit_price else f"💵 <b>Вход:</b> {entry_price:,.2f}$",
-        f"⚖️ <b>Fair Price:</b> {fair_price:,.2f}$" if fair_price else "⚖️ <b>Fair Price:</b> N/A",
+        f"💵 <b>Вход:</b> <code>{fmt_price(entry_price)}</code> | <b>Текущая:</b> <code>{fmt_price(bybit_price)}</code>" if bybit_price else f"💵 <b>Вход:</b> <code>{fmt_price(entry_price)}</code>",
+        f"⚖️ <b>Fair Price:</b> <code>{fmt_price(fair_price)}</code>" if fair_price else "⚖️ <b>Fair Price:</b> N/A",
         f"📊 <b>Спред:</b> <code>{spread:.4f}%</code> {spread_comment}" if spread is not None else "📊 <b>Спред:</b> N/A",
         f"{pnl_emoji} <b>PnL:</b> <code>{pnl_str}</code> (с плечом x{leverage})",
         f"📉 <b>Фандинг (Bybit):</b> <code>{fmt_fr(bybit_fr)}</code> [{bybit_interval}]" if bybit_fr is not None else "📉 <b>Фандинг (Bybit):</b> N/A",
@@ -187,16 +235,18 @@ def build_close_message(trade: dict, current_data: dict, reason: str = "Спре
     spread = calculate_spread(bybit_price, fair_price) if (bybit_price and fair_price) else None
     pnl = calculate_pnl(entry_price, bybit_price, side, leverage) if bybit_price else None
     duration = format_duration(entry_time)
+    fetched_at = current_data["bybit"].get("fetched_at", "—")
  
     pnl_str = f"{pnl:+.2f}%" if pnl is not None else "N/A"
     spread_str = f"{spread:.4f}%" if spread is not None else "N/A"
  
     lines = [
         "✅ <b>Сделка закрыта!</b>",
+        f"🕐 <i>{fetched_at}</i>",
         "",
         f"📌 <b>Тикер:</b> {symbol}",
         f"⏱ <b>Время удержания:</b> <code>{duration}</code>",
-        f"🎯 <b>Вход:</b> {entry_price:,.2f}$ | <b>Выход:</b> {bybit_price:,.2f}$" if bybit_price else f"🎯 <b>Вход:</b> {entry_price:,.2f}$",
+        f"🎯 <b>Вход:</b> <code>{fmt_price(entry_price)}</code> | <b>Выход:</b> <code>{fmt_price(bybit_price)}</code>" if bybit_price else f"🎯 <b>Вход:</b> <code>{fmt_price(entry_price)}</code>",
         f"📊 <b>Итоговый PnL:</b> <code>{pnl_str}</code> (x{leverage})",
         f"⚖️ <b>Статус:</b> {reason} до {spread_str}",
     ]
