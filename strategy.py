@@ -74,9 +74,9 @@ def build_analysis_message(symbol: str, data: dict) -> str:
         spread = calculate_spread(bybit_price, fair_price)
         spread_sign = "+" if spread >= 0 else ""
         spread_str = f"{spread_sign}{spread:.4f}%"
-        if spread > 0.05:
+        if spread > 0.01:
             price_signal = "🔴 Цена <b>выше</b> справедливой — сигнал на <b>Short</b>"
-        elif spread < -0.05:
+        elif spread < -0.01:
             price_signal = "🟢 Цена <b>ниже</b> справедливой — сигнал на <b>Long</b>"
         else:
             price_signal = "⚖️ Цена близка к справедливой"
@@ -117,7 +117,7 @@ def build_analysis_message(symbol: str, data: dict) -> str:
             diff = (price - fair_price) / fair_price * 100
             diff_sign = "+" if diff >= 0 else ""
             diff_str = f"{diff_sign}{diff:.4f}%"
-            diff_emoji = "🔴" if diff > 0.05 else ("🟢" if diff < -0.05 else "⚪")
+            diff_emoji = "🔴" if diff > 0.01 else ("🟢" if diff < -0.01 else "⚪")
         else:
             diff_str = "N/A"
             diff_emoji = "⚪"
@@ -151,9 +151,9 @@ def build_single_exchange_message(symbol: str, exchange_name: str, ex_data: dict
         spread = (price - fair_price) / fair_price * 100
         spread_sign = "+" if spread >= 0 else ""
         spread_str = f"{spread_sign}{spread:.4f}%"
-        if spread > 0.05:
+        if spread > 0.01:
             signal = "🔴 Цена выше Fair Price — сигнал на <b>Short</b>"
-        elif spread < -0.05:
+        elif spread < -0.01:
             signal = "🟢 Цена ниже Fair Price — сигнал на <b>Long</b>"
         else:
             signal = "⚖️ Цена близка к справедливой — ждём"
