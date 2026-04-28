@@ -1,6 +1,6 @@
 """
 exchanges.py — сбор данных с Bybit, Binance, OKX и CoinGecko.
-Оптимизировано: без load_markets() где возможно, жёсткие таймауты.
+Оптимизировано: жёсткие таймауты, USDT-margined фьючерсы.
 """
  
 import asyncio
@@ -10,9 +10,6 @@ import aiohttp
 import ccxt.async_support as ccxt
  
 logger = logging.getLogger(__name__)
- 
-# Кэш рынков чтобы не грузить каждый раз
-_markets_cache: dict = {}
  
  
 def _symbol_to_coingecko_id(symbol: str) -> str:
@@ -28,6 +25,8 @@ def _symbol_to_coingecko_id(symbol: str) -> str:
         "pepe": "pepe", "shib": "shiba-inu", "wif": "dogwifcoin",
         "bonk": "bonk", "jup": "jupiter-exchange-solana",
         "ena": "ethena", "tia": "celestia", "sei": "sei-network",
+        "bch": "bitcoin-cash", "etc": "ethereum-classic",
+        "fil": "filecoin", "aave": "aave", "xlm": "stellar",
     }
     return mapping.get(base, base)
  
@@ -57,7 +56,6 @@ def _get_funding_interval(fr_data: dict, default_hours: int = 8) -> str:
  
  
 def _now_str() -> str:
-    """Текущее время UTC в читаемом формате."""
     return datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
  
  
@@ -68,14 +66,11 @@ async def fetch_bybit_data(symbol: str) -> dict:
         "timeout": 8000,
     })
     try:
-        # Быстрый путь: пробуем сразу без load_markets
         base, quote = symbol.split("/")
         bybit_symbol = f"{base}/{quote}:{quote}"
- 
         try:
             ticker = await exchange.fetch_ticker(bybit_symbol)
         except Exception:
-            # Fallback: грузим рынки и ищем
             await exchange.load_markets()
             bybit_symbol = None
             for candidate in [symbol, f"{base}/{quote}:{quote}"]:
@@ -100,24 +95,29 @@ async def fetch_bybit_data(symbol: str) -> dict:
             interval = _get_funding_interval(fr, default_hours=8)
         except Exception as e:
             logger.warning(f"Bybit FR: {e}")
- 
         return {"exchange": "Bybit", "price": price, "funding_rate": funding,
                 "funding_interval": interval, "ok": True, "fetched_at": _now_str()}
     except Exception as e:
         logger.error(f"Bybit error: {e}")
         return {"exchange": "Bybit", "price": None, "funding_rate": None,
-                "funding_interval": "—", "ok": False, "error": str(e), "fetched_at": _now_str()}
+                "funding_interval": "—", "ok": False, "error": str(e)[:80], "fetched_at": _now_str()}
     finally:
         await exchange.close()
  
  
 async def fetch_binance_data(symbol: str) -> dict:
+    # ВАЖНО: defaultType="future" = USDT-margined (fapi.binance.com)
+    # НЕ "delivery" — это coin-margined (dapi.binance.com)
     exchange = ccxt.binance({
         "enableRateLimit": False,
-        "options": {"defaultType": "future"},
+        "options": {
+            "defaultType": "future",      # USDT-M фьючерсы
+            "adjustForTimeDifference": True,
+        },
         "timeout": 8000,
     })
     try:
+        # Binance USDT-M использует формат BTCUSDT, не BTC/USDT:USDT
         ticker = await exchange.fetch_ticker(symbol)
         price = ticker.get("last") or ticker.get("close")
         funding, interval = None, "8ч (каждые 8 часов)"
@@ -132,7 +132,7 @@ async def fetch_binance_data(symbol: str) -> dict:
     except Exception as e:
         logger.error(f"Binance error: {e}")
         return {"exchange": "Binance", "price": None, "funding_rate": None,
-                "funding_interval": "—", "ok": False, "error": str(e), "fetched_at": _now_str()}
+                "funding_interval": "—", "ok": False, "error": str(e)[:80], "fetched_at": _now_str()}
     finally:
         await exchange.close()
  
@@ -160,7 +160,7 @@ async def fetch_okx_data(symbol: str) -> dict:
     except Exception as e:
         logger.error(f"OKX error: {e}")
         return {"exchange": "OKX", "price": None, "funding_rate": None,
-                "funding_interval": "—", "ok": False, "error": str(e), "fetched_at": _now_str()}
+                "funding_interval": "—", "ok": False, "error": str(e)[:80], "fetched_at": _now_str()}
     finally:
         await exchange.close()
  
@@ -181,7 +181,7 @@ async def fetch_coingecko_price(symbol: str) -> dict:
                                     "funding_interval": "—", "ok": True, "fetched_at": _now_str()}
                         return {"exchange": "CoinGecko", "price": None, "funding_rate": None,
                                 "funding_interval": "—", "ok": False,
-                                "error": f"'{coin_id}' не найден — добавь в mapping", "fetched_at": _now_str()}
+                                "error": f"'{coin_id}' не найден", "fetched_at": _now_str()}
                     elif resp.status == 429:
                         await asyncio.sleep(1)
                     else:
@@ -195,7 +195,6 @@ async def fetch_coingecko_price(symbol: str) -> dict:
  
  
 async def fetch_all_data(symbol: str) -> dict:
-    """Параллельно собирает данные со всех источников с общим таймаутом 12 сек."""
     try:
         results = await asyncio.wait_for(
             asyncio.gather(
@@ -207,7 +206,7 @@ async def fetch_all_data(symbol: str) -> dict:
             timeout=12.0
         )
     except asyncio.TimeoutError:
-        logger.error("fetch_all_data: общий таймаут 12 сек")
+        logger.error("fetch_all_data: таймаут 12 сек")
         empty = {"price": None, "funding_rate": None, "funding_interval": "—",
                  "ok": False, "error": "Таймаут", "fetched_at": _now_str()}
         return {"bybit": {**empty, "exchange": "Bybit"},
@@ -222,7 +221,6 @@ async def fetch_all_data(symbol: str) -> dict:
  
  
 async def fetch_single_exchange(symbol: str, exchange_name: str) -> dict:
-    """Получает данные только с одной биржи (для команд /btcbybit и т.д.)"""
     fn = {
         "bybit": fetch_bybit_data,
         "binance": fetch_binance_data,
